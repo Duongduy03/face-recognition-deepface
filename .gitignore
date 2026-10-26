@@ -1,0 +1,48 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# DeepFace cache (very large)
+.DeepFace/
+weights/
+
+# Model files, embeddings, face cache (can be regenerated)
+output/
+model_knn.npz
+data.csv
+
+# Dataset - personal images (privacy)
+dataset/
+*.jpg
+*.png
+*.jpeg
+*.bmp
+
+# ...but keep benchmark charts and failure examples in the report
+!results/*.png
+!results/failures/**/*.jpg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Debug files
+debug_*.py
+test_*.py

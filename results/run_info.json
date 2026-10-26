@@ -1,0 +1,21 @@
+{
+  "n_images": 1673,
+  "n_people": 62,
+  "n_train": 1338,
+  "n_test": 335,
+  "n_undetected": 0,
+  "K": 3,
+  "test_size": 0.2,
+  "seed": 42,
+  "detector": "retinaface",
+  "topk": 3,
+  "threshold_percentile": 95,
+  "bad_crop_black_ratio": 0.15,
+  "platform": "Windows-11-10.0.22621-SP0",
+  "processor": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+  "cpu_count": 8,
+  "python": "3.12.10",
+  "tensorflow": "2.21.0",
+  "deepface": "0.0.101",
+  "errors": {}
+}

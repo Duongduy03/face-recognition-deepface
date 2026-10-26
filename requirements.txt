@@ -1,0 +1,11 @@
+streamlit
+opencv-python
+numpy
+Pillow
+pandas
+deepface
+tf-keras
+tensorflow
+scikit-learn
+matplotlib
+dlib-bin

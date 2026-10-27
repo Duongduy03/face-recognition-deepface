@@ -10,6 +10,21 @@ def l2_normalize(x):
     return x / np.maximum(norm, 1e-12)
 
 
+def majority_vote(k_labels):
+    """Nhãn nhiều phiếu nhất trong k_labels (đã sắp theo khoảng cách tăng dần).
+
+    Hòa phiếu thì chọn nhãn có láng giềng gần nhất.
+    """
+    values, counts = np.unique(k_labels, return_counts=True)
+    top = values[counts == counts.max()]
+    if len(top) == 1:
+        return top[0]
+
+    for label in k_labels:
+        if label in top:
+            return label
+
+
 class KNN:
     def __init__(self, K=3):
         self.K = K
@@ -37,16 +52,7 @@ class KNN:
     def _predict_one(self, x, exclude=None):
         _, idx = self.kneighbors(x, exclude)
         k_labels = self.y_train[idx[: self.K]]
-
-        values, counts = np.unique(k_labels, return_counts=True)
-        top = values[counts == counts.max()]
-        if len(top) == 1:
-            return top[0]
-
-        # Hòa phiếu: chọn nhãn có láng giềng gần nhất (k_labels đã sắp theo khoảng cách tăng dần)
-        for label in k_labels:
-            if label in top:
-                return label
+        return majority_vote(k_labels)
 
     def predict(self, X_test):
         X_test = np.array(X_test, dtype="float32")

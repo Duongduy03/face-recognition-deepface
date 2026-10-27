@@ -9,3 +9,6 @@ tensorflow
 scikit-learn
 matplotlib
 dlib-bin
+werkzeug
+psycopg[binary]
+pgvector

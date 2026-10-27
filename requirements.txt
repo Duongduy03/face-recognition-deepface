@@ -3,7 +3,7 @@ opencv-python
 numpy
 Pillow
 pandas
-deepface
+deepface==0.0.103
 tf-keras
 tensorflow
 scikit-learn

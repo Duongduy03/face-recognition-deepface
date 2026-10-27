@@ -1,3 +1,4 @@
+import hashlib
 import os
 import json
 import time
@@ -12,8 +13,9 @@ from PIL import ImageFont, ImageDraw, Image
 from config import (
     DATASET_DIR, RESULTS_DIR, MODEL_NAMES, DETECTOR_BACKEND, PIPELINE_FINGERPRINT, model_path, normalize_name,
 )
+import train_model
 import vector_db
-from face_pipeline import detect_faces, embed_face
+from face_pipeline import detect_faces, embed_face, ensure_face_cache
 from knn_func import load_knn_from_npz
 
 TARGET_IMAGES_PER_PERSON = 10
@@ -85,13 +87,17 @@ def pg_connection():
     return vector_db.connect()
 
 
+def get_pg_conn():
+    conn = pg_connection()
+    if conn.closed or conn.broken:   # DB khởi động lại: mở kết nối mới
+        pg_connection.clear()
+        conn = pg_connection()
+    return conn
+
+
 def get_knn(model_name, source=SOURCE_NPZ):
     if source == SOURCE_PG:
-        conn = pg_connection()
-        if conn.closed or conn.broken:   # DB khởi động lại: mở kết nối mới
-            pg_connection.clear()
-            conn = pg_connection()
-        return vector_db.load_pg_knn(model_name, conn)
+        return vector_db.load_pg_knn(model_name, get_pg_conn())
     return load_model(model_name, os.path.getmtime(model_path(model_name)))
 
 
@@ -218,47 +224,88 @@ def page_chup_anh():
     picture = st.camera_input("Chụp ảnh khuôn mặt", key="camera_capture")
 
     if picture is not None:
-        if not person_name.strip():
-            st.error("Bạn chưa nhập tên/mã định danh.")
-            return
-
-        bytes_data = picture.getvalue()
-        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-
-        if cv2_img is None or cv2_img.size == 0:
-            st.error("Không đọc được ảnh từ camera.")
-            return
-
-        with st.spinner("Đang detect khuôn mặt..."):
-            faces = detect_faces(cv2_img)
-
-        if not faces:
-            st.error("Không tìm thấy khuôn mặt. Hãy chụp lại gần hơn / sáng hơn.")
-            return
-
-        # Lấy face lớn nhất
-        best = max(faces, key=lambda f: f["facial_area"]["w"] * f["facial_area"]["h"])
-        face_bgr, facial_area = best["face_bgr"], best["facial_area"]
-
-        person_folder_path = os.path.join(DATASET_DIR, person_name.strip())
-        success, path = _save_image(face_bgr, person_folder_path)
-
-        if success:
-            new_count = len([f for f in os.listdir(person_folder_path)
-                           if os.path.isfile(os.path.join(person_folder_path, f))])
-            st.success(f"✅ Đã lưu ảnh: {os.path.basename(path)}")
-            st.info(f"📊 Tổng số ảnh hiện có: {new_count}/{TARGET_IMAGES_PER_PERSON}")
-
-            st.image(
-                cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB),
-                caption=f"Khuôn mặt đã lưu ({facial_area['w']}x{facial_area['h']}px)",
-                width="stretch",
-            )
-        else:
-            st.error(f"Lỗi khi lưu ảnh: {path}")
+        _process_capture(picture.getvalue(), person_name)
 
     st.markdown("</div>", unsafe_allow_html=True)
-    st.caption("⚡ Sau khi chụp đủ ảnh, chạy `python train_model.py --model <tên mô hình>` để train model.")
+    _sync_section()
+
+
+def _process_capture(bytes_data, person_name):
+    if not person_name.strip():
+        st.error("Bạn chưa nhập tên/mã định danh.")
+        return
+
+    # Streamlit chạy lại cả trang mỗi khi bấm nút (kể cả nút đồng bộ) và camera_input vẫn giữ ảnh cũ:
+    # không nhớ ảnh đã lưu thì mỗi lần chạy lại sẽ ghi thêm một bản trùng vào dataset/
+    photo_id = hashlib.md5(bytes_data).hexdigest()
+    if st.session_state.get("saved_photo_id") == photo_id:
+        st.caption("Ảnh này đã được lưu. Bấm 'Clear photo' rồi chụp ảnh mới.")
+        return
+
+    cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+    if cv2_img is None or cv2_img.size == 0:
+        st.error("Không đọc được ảnh từ camera.")
+        return
+
+    with st.spinner("Đang detect khuôn mặt..."):
+        faces = detect_faces(cv2_img)
+
+    if not faces:
+        st.error("Không tìm thấy khuôn mặt. Hãy chụp lại gần hơn / sáng hơn.")
+        return
+
+    # Lấy face lớn nhất
+    best = max(faces, key=lambda f: f["facial_area"]["w"] * f["facial_area"]["h"])
+    face_bgr, facial_area = best["face_bgr"], best["facial_area"]
+
+    person_folder_path = os.path.join(DATASET_DIR, person_name.strip())
+    success, path = _save_image(face_bgr, person_folder_path)
+
+    if success:
+        st.session_state["saved_photo_id"] = photo_id
+        new_count = len([f for f in os.listdir(person_folder_path)
+                       if os.path.isfile(os.path.join(person_folder_path, f))])
+        st.success(f"✅ Đã lưu ảnh: {os.path.basename(path)}")
+        st.info(f"📊 Tổng số ảnh hiện có: {new_count}/{TARGET_IMAGES_PER_PERSON}")
+
+        st.image(
+            cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB),
+            caption=f"Khuôn mặt đã lưu ({facial_area['w']}x{facial_area['h']}px)",
+            width="stretch",
+        )
+    else:
+        st.error(f"Lỗi khi lưu ảnh: {path}")
+
+
+def _sync_section():
+    """Ảnh chụp chỉ nằm trong dataset/. Bước này giống `train_model.py --db`: embed dataset/, ghi vector
+    vào PostgreSQL và tính lại ngưỡng Unknown một lần cho cả lô, không làm sau từng ảnh."""
+    st.subheader("☁️ Đồng bộ vector lên PostgreSQL")
+    st.caption("Bấm sau khi chụp đủ ảnh. Ảnh mới cần detect + embed nên có thể mất vài phút; "
+               "ảnh đã xử lý trước đó được lấy từ cache.")
+
+    models = st.multiselect("Mô hình cần đồng bộ", MODEL_NAMES, default=available_models(SOURCE_NPZ),
+                            key="sync_models")
+    if not st.button("Đồng bộ lên DB", disabled=not models):
+        return
+
+    try:
+        with st.status("Đang đồng bộ...", expanded=True) as status:
+            conn = get_pg_conn()
+            faces_df = ensure_face_cache()
+            if faces_df.empty:
+                raise ValueError("Không có ảnh hợp lệ trong dataset/")
+            for model_name in models:
+                st.write(f"{model_name}: embed, ghi vector, tính lại ngưỡng Unknown...")
+                train_model.train(model_name, faces_df, conn)
+            status.update(label="Đồng bộ xong", state="complete")
+    except Exception as e:
+        st.error(f"Đồng bộ thất bại: {e}")
+    else:
+        pg_models.clear()   # để trang Nhận diện thấy ngay các mô hình mới trong DB
+        st.success(f"Đã đồng bộ {len(faces_df)} ảnh ({faces_df['person'].nunique()} người) "
+                   f"cho {', '.join(models)}.")
 
 
 # =========================

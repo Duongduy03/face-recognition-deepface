@@ -1,0 +1,18 @@
+# PostgreSQL + pgvector cho kho embedding (xem vector_db.py).
+#   docker compose up -d      # khởi động
+#   docker compose down       # dừng (dữ liệu vẫn còn trong volume pgdata)
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: face_pgvector
+    environment:
+      POSTGRES_USER: face
+      POSTGRES_PASSWORD: face
+      POSTGRES_DB: face
+    ports:
+      - "127.0.0.1:5432:5432"   # chỉ máy này truy cập được; DB dùng chung của nhóm nằm trên cloud
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

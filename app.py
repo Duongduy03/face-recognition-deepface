@@ -1,5 +1,7 @@
 import os
 import json
+import time
+import uuid
 
 import cv2
 import numpy as np
@@ -8,12 +10,15 @@ import streamlit as st
 
 from PIL import ImageFont, ImageDraw, Image
 from config import (
-    DATASET_DIR, RESULTS_DIR, MODEL_NAMES, DETECTOR_BACKEND, model_path,
+    DATASET_DIR, RESULTS_DIR, MODEL_NAMES, DETECTOR_BACKEND, PIPELINE_FINGERPRINT, model_path, normalize_name,
 )
+import vector_db
 from face_pipeline import detect_faces, embed_face
 from knn_func import load_knn_from_npz
 
 TARGET_IMAGES_PER_PERSON = 10
+SOURCE_NPZ = "File .npz"
+SOURCE_PG = "PostgreSQL (pgvector)"
 
 # =========================
 # CẤU HÌNH GIAO DIỆN
@@ -55,8 +60,17 @@ st.markdown(
 # =========================
 # LOAD MODEL KNN
 # =========================
-def available_models():
-    """Các mô hình đã được train (có file output/model_knn_<tên>.npz)."""
+@st.cache_data(ttl=30)
+def pg_models():
+    """Các mô hình đã nạp vào PostgreSQL (rỗng nếu DB không chạy)."""
+    return vector_db.available_models()
+
+
+def available_models(source=SOURCE_NPZ):
+    """Các mô hình đã được train: có file output/model_knn_<tên>.npz, hoặc đã nạp vào PostgreSQL."""
+    if source == SOURCE_PG:
+        in_db = pg_models()
+        return [m for m in MODEL_NAMES if m in in_db]
     return [m for m in MODEL_NAMES if os.path.exists(model_path(m))]
 
 
@@ -66,7 +80,18 @@ def load_model(model_name, mtime):
     return load_knn_from_npz(model_path(model_name))
 
 
-def get_knn(model_name):
+@st.cache_resource
+def pg_connection():
+    return vector_db.connect()
+
+
+def get_knn(model_name, source=SOURCE_NPZ):
+    if source == SOURCE_PG:
+        conn = pg_connection()
+        if conn.closed or conn.broken:   # DB khởi động lại: mở kết nối mới
+            pg_connection.clear()
+            conn = pg_connection()
+        return vector_db.load_pg_knn(model_name, conn)
     return load_model(model_name, os.path.getmtime(model_path(model_name)))
 
 
@@ -83,10 +108,10 @@ def _save_image(frame, person_folder_path: str):
         if not is_success:
             return False, "Lỗi mã hóa ảnh"
 
-        count = len([f for f in os.listdir(person_folder_path)
-                    if os.path.isfile(os.path.join(person_folder_path, f))]) + 1
-
-        file_path = os.path.join(person_folder_path, f"{count}.jpg")
+        # tên file không dựa vào số ảnh đang có: image_key (<Tên>/<file>) là khóa chung trong DB của nhóm,
+        # hai máy cùng đặt "1.jpg" sẽ ghi đè ảnh của nhau
+        file_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+        file_path = os.path.join(person_folder_path, file_name)
 
         with open(file_path, "wb") as f:
             f.write(img_encoded.tobytes())
@@ -169,10 +194,10 @@ def page_chup_anh():
     st.markdown('<div class="step-box">', unsafe_allow_html=True)
     st.subheader("📸 Chụp ảnh thu thập dữ liệu")
 
-    person_name = st.text_input(
+    person_name = normalize_name(st.text_input(
         "Nhập tên (có thể có dấu, ví dụ: Mạnh, Khang, Nguyễn Văn A):",
         "",
-    )
+    ))
 
     if person_name.strip():
         person_folder_path = os.path.join(DATASET_DIR, person_name.strip())
@@ -239,7 +264,7 @@ def page_chup_anh():
 # =========================
 # PAGE 2: NHẬN DIỆN ẢNH UPLOAD
 # =========================
-def page_nhan_dien(model_name):
+def page_nhan_dien(model_name, source=SOURCE_NPZ):
     st.markdown('<div class="main-title">NHẬN DIỆN KHUÔN MẶT</div>', unsafe_allow_html=True)
     st.markdown(
         f'<div class="sub-title">DeepFace RetinaFace + {model_name} Embedding + KNN</div>',
@@ -253,7 +278,13 @@ def page_nhan_dien(model_name):
             "sau khi chạy `python benchmark.py`)."
         )
         return
-    knn_model = get_knn(model_name)
+    knn_model = get_knn(model_name, source)
+    db_pipeline = getattr(knn_model, "pipeline_fingerprint", None)
+    if db_pipeline and db_pipeline != PIPELINE_FINGERPRINT:
+        st.warning(
+            f"Vector trong DB được tạo bằng pipeline `{db_pipeline}`, máy này dùng `{PIPELINE_FINGERPRINT}`. "
+            "Kết quả nhận diện có thể sai."
+        )
 
     uploaded_img = st.file_uploader("Chọn ảnh để nhận diện", type=["jpg", "jpeg", "png"])
 
@@ -329,7 +360,7 @@ def page_nhan_dien(model_name):
     )
     thr = knn_model.threshold
     st.caption(
-        f"Mô hình {model_name}, K={knn_model.K}, ngưỡng Unknown = "
+        f"Mô hình {model_name} ({source}), K={knn_model.K}, ngưỡng Unknown = "
         f"{'không dùng' if thr is None else round(thr, 3)} (khoảng cách Euclid trên embedding đã L2-normalize)."
     )
     st.dataframe(pd.DataFrame(details), hide_index=True)
@@ -410,8 +441,11 @@ def main():
     choice = st.sidebar.radio("Chọn chức năng", ["📸 Chụp ảnh", "🔍 Nhận diện", "📊 So sánh mô hình"])
 
     model_name = None
+    source = SOURCE_NPZ
     if choice == "🔍 Nhận diện":
-        models = available_models()
+        if pg_models():   # chỉ hiện lựa chọn khi PostgreSQL đang chạy và đã có dữ liệu
+            source = st.sidebar.radio("Nguồn vector", [SOURCE_NPZ, SOURCE_PG])
+        models = available_models(source)
         if models:
             model_name = st.sidebar.selectbox("Mô hình embedding", models)
             st.sidebar.info(f"**Model:** {model_name}\n\n**Detector:** {DETECTOR_BACKEND}")
@@ -419,7 +453,7 @@ def main():
     if choice == "📸 Chụp ảnh":
         page_chup_anh()
     elif choice == "🔍 Nhận diện":
-        page_nhan_dien(model_name)
+        page_nhan_dien(model_name, source)
     else:
         page_so_sanh()
 

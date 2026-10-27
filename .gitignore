@@ -1,3 +1,5 @@
+.env
+
 # Virtual Environment
 venv/
 .venv/
@@ -21,6 +23,9 @@ data.csv
 
 # Dataset - personal images (privacy)
 dataset/
+
+# Dữ liệu ngoài tải từ Kaggle (ảnh + file nhãn .txt/.csv, không bị *.jpg bắt hết)
+external/
 *.jpg
 *.png
 *.jpeg

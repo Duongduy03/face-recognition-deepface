@@ -1,5 +1,7 @@
 import os
 import sys
+import unicodedata
+from importlib import metadata
 
 # Windows: khi stdout bị pipe/redirect, mã hóa mặc định (cp1252) không in được tiếng Việt và emoji
 # trong log của DeepFace -> UnicodeEncodeError. config.py luôn được import trước DeepFace.
@@ -21,7 +23,30 @@ EMBED_DIR = os.path.join(OUTPUT_DIR, "embeddings")      # cache embedding của 
 FACES_CACHE_DIR = os.path.join(OUTPUT_DIR, "faces")     # cache khuôn mặt đã detect
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
+# Ảnh "người lạ" không có tên (Kaggle face-detection-dataset, git bỏ qua) dùng để đo tỉ lệ nhận nhầm.
+# Để ngoài dataset/: ở đó mỗi thư mục con là một người và sẽ bị đưa vào train.
+IMPOSTOR_SRC_DIR = os.path.join(PROJECT_ROOT, "external", "face-detection")
+IMPOSTOR_CACHE_DIR = os.path.join(OUTPUT_DIR, "impostor_faces")   # khuôn mặt đã detect + index.csv
+
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+
+def _load_dotenv(path):
+    """Đọc các dòng KEY=VALUE trong file .env (nếu có) vào os.environ, không ghi đè biến đã đặt sẵn."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+# Kho embedding trên PostgreSQL + pgvector. Mặc định là container cục bộ (docker-compose.yml);
+# cả nhóm dùng chung một DB cloud thì đặt FACE_DB_URL trong file .env (file này không đưa lên git).
+DB_URL = os.environ.get("FACE_DB_URL") or "postgresql://face:face@localhost:5432/face"
 
 # =========================
 # CẤU HÌNH MÔ HÌNH
@@ -49,6 +74,25 @@ UNAVAILABLE_MODELS = {
 }
 
 DETECTOR_BACKEND = "retinaface"
+
+
+def _deepface_version():
+    # đọc metadata của gói, không import deepface (config.py phải được import trước deepface)
+    try:
+        return metadata.version("deepface")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+# Dấu vết của pipeline tạo embedding. Vector chỉ so sánh được khi cùng detector, cùng thứ tự màu BGR, cùng L2
+# và cùng phiên bản DeepFace; vector_db.py lưu chuỗi này và từ chối ghi chung DB khi nó khác.
+PIPELINE_FINGERPRINT = f"detector={DETECTOR_BACKEND};align=1;color=bgr;norm=l2;deepface={_deepface_version()}"
+
+
+def normalize_name(name):
+    """Tên người: Unicode NFC và bỏ khoảng trắng thừa, để "Nguyễn" gõ bằng ký tự dựng sẵn hay tổ hợp dấu
+    đều ra cùng một người. Không đổi chữ hoa/thường."""
+    return " ".join(unicodedata.normalize("NFC", name).split())
 
 # =========================
 # KNN & ĐÁNH GIÁ

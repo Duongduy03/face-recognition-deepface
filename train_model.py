@@ -50,19 +50,23 @@ def recalibrate_db(db_conn, model_name):
     print(f"Ngưỡng Unknown trong DB = {threshold} ({len(X)} vector, {len(set(y))} người)")
 
 
-def train(model_name, faces_df, db_conn=None, prune=False):
+def train(model_name, faces_df, use_db=False, prune=False):
     print(f"\n===== {model_name} =====")
-    if db_conn is not None:
-        vector_db.check_pipeline(db_conn, model_name)   # báo lỗi trước khi tốn thời gian embed
+    # Mở kết nối mới ngay trước mỗi lần dùng: embed mất hàng chục phút, Postgres cloud tự ngắt kết nối nhàn rỗi
+    # (Neon free: AdminShutdown) nên kết nối mở từ đầu sẽ chết trước khi kịp ghi.
+    if use_db:
+        with vector_db.connect() as db_conn:
+            vector_db.check_pipeline(db_conn, model_name)   # báo lỗi trước khi tốn thời gian embed
     X, _ = embed_dataset(model_name, faces_df)
     y = faces_df["person"].to_numpy()
 
     threshold = calibrate_threshold(X, y, K)
     save_model(model_name, X, y, K, threshold)
-    if db_conn is not None:
-        vector_db.ingest(db_conn, model_name, faces_df, X, K, prune=prune)
-        print(f"Đã ghi {len(X)} vector vào PostgreSQL (bảng {vector_db._table(model_name)})")
-        recalibrate_db(db_conn, model_name)
+    if use_db:
+        with vector_db.connect() as db_conn:
+            vector_db.ingest(db_conn, model_name, faces_df, X, K, prune=prune)
+            print(f"Đã ghi {len(X)} vector vào PostgreSQL (bảng {vector_db._table(model_name)})")
+            recalibrate_db(db_conn, model_name)
 
     df = pd.DataFrame(X, columns=map(str, range(X.shape[1])))
     df["name"] = y
@@ -115,9 +119,8 @@ def main():
     print(f"{len(faces_df)} ảnh, {faces_df['person'].nunique()} người "
           f"({n_undetected} ảnh không detect được mặt, dùng nguyên ảnh)")
 
-    db_conn = vector_db.connect() if args.db else None
     for model_name in models:
-        train(model_name, faces_df, db_conn, prune=args.db_prune)
+        train(model_name, faces_df, args.db, prune=args.db_prune)
 
 
 if __name__ == "__main__":

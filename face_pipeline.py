@@ -134,34 +134,35 @@ def ensure_face_cache(dataset_dir=DATASET_DIR, verbose=True):
         print(f"Detect {len(todo)} ảnh mới ({len(done)} ảnh đã có trong cache)...")
 
     new_rows = []
-    for n, (person, filename) in enumerate(todo, start=1):
-        src_path = os.path.join(dataset_dir, person, filename)
-        img = imread_unicode(src_path)
-        if img is None or img.size == 0:
-            print(f"  Không đọc được {src_path}")
-            continue
+    try:
+        for n, (person, filename) in enumerate(todo, start=1):
+            src_path = os.path.join(dataset_dir, person, filename)
+            img = imread_unicode(src_path)
+            if img is None or img.size == 0:
+                print(f"  Không đọc được {src_path}")
+                continue
 
-        t0 = time.perf_counter()
-        faces = detect_faces(img, drop_undetected=False)
-        detect_s = time.perf_counter() - t0
-        if not faces:
-            continue
+            t0 = time.perf_counter()
+            faces = detect_faces(img, drop_undetected=False)
+            detect_s = time.perf_counter() - t0
+            if not faces:
+                continue
 
-        face = largest_face(faces)
-        face_path = os.path.join(FACES_CACHE_DIR, person, filename)
-        imwrite_unicode(face_path, face["face_bgr"])
-        new_rows.append({
-            "person": person, "filename": filename, "src_path": src_path,
-            "face_path": face_path, "detected": int(face["confidence"] > 0),
-            "confidence": face["confidence"], "detect_s": detect_s,
-        })
+            face = largest_face(faces)
+            face_path = os.path.join(FACES_CACHE_DIR, person, filename)
+            imwrite_unicode(face_path, face["face_bgr"])
+            new_rows.append({
+                "person": person, "filename": filename, "src_path": src_path,
+                "face_path": face_path, "detected": int(face["confidence"] > 0),
+                "confidence": face["confidence"], "detect_s": detect_s,
+            })
 
-        if verbose and n % 100 == 0:
-            print(f"  {n}/{len(todo)}")
-        if n % 100 == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
-            done = _write_index(index_path, done, new_rows, cols)
-
-    done = _write_index(index_path, done, new_rows, cols)
+            if verbose and n % 100 == 0:
+                print(f"  {n}/{len(todo)}")
+            if n % 100 == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
+                done = _write_index(index_path, done, new_rows, cols)
+    finally:
+        done = _write_index(index_path, done, new_rows, cols)   # Ctrl-C cũng lưu nốt phần đã detect
 
     # chỉ giữ ảnh còn tồn tại trong dataset hiện tại
     current = set(_list_dataset_images(dataset_dir))
@@ -174,7 +175,9 @@ def _write_index(index_path, done, new_rows, cols):
         done = pd.concat([done, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
         new_rows.clear()
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
-    done.to_csv(index_path, index=False)
+    tmp_path = index_path + ".tmp"   # ghi file tạm rồi đổi tên, ngắt giữa chừng không làm hỏng index cũ
+    done.to_csv(tmp_path, index=False)
+    os.replace(tmp_path, index_path)
     return done
 
 

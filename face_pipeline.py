@@ -17,6 +17,8 @@ from config import (
 from deepface import DeepFace
 from knn_func import l2_normalize
 
+EMBED_SAVE_EVERY = 1000   # lưu cache embedding sau mỗi ngần này ảnh
+
 
 # =========================
 # I/O ẢNH (hỗ trợ đường dẫn Unicode trên Windows)
@@ -122,6 +124,9 @@ def ensure_face_cache(dataset_dir=DATASET_DIR, verbose=True):
     index_path = os.path.join(FACES_CACHE_DIR, "index.csv")
     cols = ["person", "filename", "src_path", "face_path", "detected", "confidence", "detect_s"]
     done = pd.read_csv(index_path) if os.path.exists(index_path) else pd.DataFrame(columns=cols)
+    # đường dẫn trong index có thể do máy khác ghi: tính lại theo thư mục hiện tại từ (person, filename)
+    done["src_path"] = [os.path.join(dataset_dir, p, f) for p, f in zip(done["person"], done["filename"])]
+    done["face_path"] = [os.path.join(FACES_CACHE_DIR, p, f) for p, f in zip(done["person"], done["filename"])]
     done_keys = set(zip(done["person"], done["filename"]))
 
     todo = [r for r in _list_dataset_images(dataset_dir) if r not in done_keys]
@@ -188,7 +193,9 @@ def embed_dataset(model_name, faces_df, verbose=True):
     if os.path.exists(cache_path):
         data = np.load(cache_path, allow_pickle=True)
         for p, x, t in zip(data["paths"], data["X"], data["embed_s"]):
-            cache[str(p)] = (x, float(t))
+            # khóa là đường dẫn tuyệt đối, có thể do máy khác ghi: lấy <người>/<file> rồi gắn vào thư mục hiện tại
+            person, filename = str(p).replace("\\", "/").split("/")[-2:]
+            cache[os.path.join(FACES_CACHE_DIR, person, filename)] = (x, float(t))
 
     paths = list(faces_df["face_path"])
     missing = [p for p in paths if p not in cache]
@@ -204,15 +211,23 @@ def embed_dataset(model_name, faces_df, verbose=True):
             cache[p] = (emb, time.perf_counter() - t0)
             if verbose and n % 300 == 0:
                 print(f"  {n}/{len(missing)}")
+            if n % EMBED_SAVE_EVERY == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
+                _write_embed_cache(cache_path, cache)
 
-        all_paths = list(cache.keys())
-        np.savez(
-            cache_path,
-            paths=np.array(all_paths),
-            X=np.array([cache[p][0] for p in all_paths], dtype="float32"),
-            embed_s=np.array([cache[p][1] for p in all_paths], dtype="float64"),
-        )
+        _write_embed_cache(cache_path, cache)
 
     X = np.array([cache[p][0] for p in paths], dtype="float32")
     embed_s = np.array([cache[p][1] for p in paths], dtype="float64")
     return X, embed_s
+
+
+def _write_embed_cache(cache_path, cache):
+    all_paths = list(cache.keys())
+    tmp_path = cache_path[:-len(".npz")] + ".tmp.npz"   # ghi file tạm rồi đổi tên, ngắt giữa chừng không làm hỏng cache cũ
+    np.savez(
+        tmp_path,
+        paths=np.array(all_paths),
+        X=np.array([cache[p][0] for p in all_paths], dtype="float32"),
+        embed_s=np.array([cache[p][1] for p in all_paths], dtype="float64"),
+    )
+    os.replace(tmp_path, cache_path)

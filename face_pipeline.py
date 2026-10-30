@@ -17,6 +17,8 @@ from config import (
 from deepface import DeepFace
 from knn_func import l2_normalize
 
+EMBED_SAVE_EVERY = 1000   # lưu cache embedding sau mỗi ngần này ảnh
+
 
 # =========================
 # I/O ẢNH (hỗ trợ đường dẫn Unicode trên Windows)
@@ -122,6 +124,9 @@ def ensure_face_cache(dataset_dir=DATASET_DIR, verbose=True):
     index_path = os.path.join(FACES_CACHE_DIR, "index.csv")
     cols = ["person", "filename", "src_path", "face_path", "detected", "confidence", "detect_s"]
     done = pd.read_csv(index_path) if os.path.exists(index_path) else pd.DataFrame(columns=cols)
+    # đường dẫn trong index có thể do máy khác ghi: tính lại theo thư mục hiện tại từ (person, filename)
+    done["src_path"] = [os.path.join(dataset_dir, p, f) for p, f in zip(done["person"], done["filename"])]
+    done["face_path"] = [os.path.join(FACES_CACHE_DIR, p, f) for p, f in zip(done["person"], done["filename"])]
     done_keys = set(zip(done["person"], done["filename"]))
 
     todo = [r for r in _list_dataset_images(dataset_dir) if r not in done_keys]
@@ -129,34 +134,35 @@ def ensure_face_cache(dataset_dir=DATASET_DIR, verbose=True):
         print(f"Detect {len(todo)} ảnh mới ({len(done)} ảnh đã có trong cache)...")
 
     new_rows = []
-    for n, (person, filename) in enumerate(todo, start=1):
-        src_path = os.path.join(dataset_dir, person, filename)
-        img = imread_unicode(src_path)
-        if img is None or img.size == 0:
-            print(f"  Không đọc được {src_path}")
-            continue
+    try:
+        for n, (person, filename) in enumerate(todo, start=1):
+            src_path = os.path.join(dataset_dir, person, filename)
+            img = imread_unicode(src_path)
+            if img is None or img.size == 0:
+                print(f"  Không đọc được {src_path}")
+                continue
 
-        t0 = time.perf_counter()
-        faces = detect_faces(img, drop_undetected=False)
-        detect_s = time.perf_counter() - t0
-        if not faces:
-            continue
+            t0 = time.perf_counter()
+            faces = detect_faces(img, drop_undetected=False)
+            detect_s = time.perf_counter() - t0
+            if not faces:
+                continue
 
-        face = largest_face(faces)
-        face_path = os.path.join(FACES_CACHE_DIR, person, filename)
-        imwrite_unicode(face_path, face["face_bgr"])
-        new_rows.append({
-            "person": person, "filename": filename, "src_path": src_path,
-            "face_path": face_path, "detected": int(face["confidence"] > 0),
-            "confidence": face["confidence"], "detect_s": detect_s,
-        })
+            face = largest_face(faces)
+            face_path = os.path.join(FACES_CACHE_DIR, person, filename)
+            imwrite_unicode(face_path, face["face_bgr"])
+            new_rows.append({
+                "person": person, "filename": filename, "src_path": src_path,
+                "face_path": face_path, "detected": int(face["confidence"] > 0),
+                "confidence": face["confidence"], "detect_s": detect_s,
+            })
 
-        if verbose and n % 100 == 0:
-            print(f"  {n}/{len(todo)}")
-        if n % 100 == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
-            done = _write_index(index_path, done, new_rows, cols)
-
-    done = _write_index(index_path, done, new_rows, cols)
+            if verbose and n % 100 == 0:
+                print(f"  {n}/{len(todo)}")
+            if n % 100 == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
+                done = _write_index(index_path, done, new_rows, cols)
+    finally:
+        done = _write_index(index_path, done, new_rows, cols)   # Ctrl-C cũng lưu nốt phần đã detect
 
     # chỉ giữ ảnh còn tồn tại trong dataset hiện tại
     current = set(_list_dataset_images(dataset_dir))
@@ -169,7 +175,9 @@ def _write_index(index_path, done, new_rows, cols):
         done = pd.concat([done, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
         new_rows.clear()
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
-    done.to_csv(index_path, index=False)
+    tmp_path = index_path + ".tmp"   # ghi file tạm rồi đổi tên, ngắt giữa chừng không làm hỏng index cũ
+    done.to_csv(tmp_path, index=False)
+    os.replace(tmp_path, index_path)
     return done
 
 
@@ -188,7 +196,9 @@ def embed_dataset(model_name, faces_df, verbose=True):
     if os.path.exists(cache_path):
         data = np.load(cache_path, allow_pickle=True)
         for p, x, t in zip(data["paths"], data["X"], data["embed_s"]):
-            cache[str(p)] = (x, float(t))
+            # khóa là đường dẫn tuyệt đối, có thể do máy khác ghi: lấy <người>/<file> rồi gắn vào thư mục hiện tại
+            person, filename = str(p).replace("\\", "/").split("/")[-2:]
+            cache[os.path.join(FACES_CACHE_DIR, person, filename)] = (x, float(t))
 
     paths = list(faces_df["face_path"])
     missing = [p for p in paths if p not in cache]
@@ -204,15 +214,23 @@ def embed_dataset(model_name, faces_df, verbose=True):
             cache[p] = (emb, time.perf_counter() - t0)
             if verbose and n % 300 == 0:
                 print(f"  {n}/{len(missing)}")
+            if n % EMBED_SAVE_EVERY == 0:   # lưu định kỳ để chạy lại được nếu bị ngắt
+                _write_embed_cache(cache_path, cache)
 
-        all_paths = list(cache.keys())
-        np.savez(
-            cache_path,
-            paths=np.array(all_paths),
-            X=np.array([cache[p][0] for p in all_paths], dtype="float32"),
-            embed_s=np.array([cache[p][1] for p in all_paths], dtype="float64"),
-        )
+        _write_embed_cache(cache_path, cache)
 
     X = np.array([cache[p][0] for p in paths], dtype="float32")
     embed_s = np.array([cache[p][1] for p in paths], dtype="float64")
     return X, embed_s
+
+
+def _write_embed_cache(cache_path, cache):
+    all_paths = list(cache.keys())
+    tmp_path = cache_path[:-len(".npz")] + ".tmp.npz"   # ghi file tạm rồi đổi tên, ngắt giữa chừng không làm hỏng cache cũ
+    np.savez(
+        tmp_path,
+        paths=np.array(all_paths),
+        X=np.array([cache[p][0] for p in all_paths], dtype="float32"),
+        embed_s=np.array([cache[p][1] for p in all_paths], dtype="float64"),
+    )
+    os.replace(tmp_path, cache_path)

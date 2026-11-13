@@ -13,6 +13,7 @@ import pandas as pd
 # config phải được import trước deepface: nó đặt stdout sang UTF-8 để log của DeepFace không gây lỗi
 from config import (
     DATASET_DIR, FACES_CACHE_DIR, EMBED_DIR, DETECTOR_BACKEND, IMAGE_EXTS,
+    ALGO_RESULTS_DIR, BENCH_MIN_IMAGES,
 )
 from deepface import DeepFace
 from knn_func import l2_normalize
@@ -181,6 +182,59 @@ def _write_index(index_path, done, new_rows, cols):
     return done
 
 
+def load_cached_faces(people=None, min_images=None, dataset_dir=DATASET_DIR):
+    """Đọc cache khuôn mặt (output/faces/index.csv) mà KHÔNG detect thêm ảnh nào.
+
+    Khác ensure_face_cache: hàm kia detect mọi ảnh trong dataset/ chưa có trong cache (hàng chục nghìn ảnh nếu cache
+    đang tụt lại, ~1,3 giây/ảnh). Hàm này chỉ trả những gì đã có, nên dùng cho benchmark trên một tập con.
+
+    people: chỉ giữ những người trong danh sách này. min_images: chỉ giữ người có ít nhất ngần này ảnh hợp lệ
+    (cả hai cùng đặt thì áp dụng cả hai). Ảnh hợp lệ là ảnh gốc còn trong dataset/ và file crop còn trong cache.
+    Cột và thứ tự giống ensure_face_cache: person, filename, src_path, face_path, detected, confidence, detect_s.
+    """
+    index_path = os.path.join(FACES_CACHE_DIR, "index.csv")
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(f"Chưa có cache khuôn mặt {index_path}. Chạy ensure_face_cache() (detect) một lần trước.")
+
+    df = pd.read_csv(index_path)
+    # đường dẫn trong index có thể do máy khác ghi: tính lại theo thư mục hiện tại từ (person, filename)
+    df["src_path"] = [os.path.join(dataset_dir, p, f) for p, f in zip(df["person"], df["filename"])]
+    df["face_path"] = [os.path.join(FACES_CACHE_DIR, p, f) for p, f in zip(df["person"], df["filename"])]
+
+    if people is not None:
+        df = df[df["person"].isin(set(people))]
+    df = df[[os.path.exists(s) and os.path.exists(c) for s, c in zip(df["src_path"], df["face_path"])]]
+    if min_images is not None:
+        counts = df["person"].value_counts()
+        df = df[df["person"].isin(counts[counts >= min_images].index)]
+    return df.sort_values(["person", "filename"]).reset_index(drop=True)
+
+
+def load_bench_subset(min_images=BENCH_MIN_IMAGES, subset_file=None):
+    """Tập con cố định để so sánh 10 thuật toán (docs/SO_SANH_THUAT_TOAN.md mục 2.1), đọc từ cache, không detect.
+
+    Danh sách người nằm trong results/algorithms/subset_people.txt (mỗi dòng một tên). Chưa có file thì tạo từ cache
+    hiện tại (người có ít nhất min_images ảnh). Từ đó trở đi luôn dùng đúng danh sách trong file, dù cache có thêm
+    người mới, để các lần chạy so sánh được với nhau. Số ảnh của mỗi người thì vẫn là mọi ảnh đang có trong cache.
+    """
+    subset_file = subset_file or os.path.join(ALGO_RESULTS_DIR, "subset_people.txt")
+    if os.path.exists(subset_file):
+        with open(subset_file, encoding="utf-8") as f:
+            people = [line.strip() for line in f if line.strip()]
+    else:
+        people = sorted(load_cached_faces(min_images=min_images)["person"].unique())
+        os.makedirs(os.path.dirname(subset_file), exist_ok=True)
+        with open(subset_file, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(people) + "\n")
+        print(f"Đã tạo {subset_file} ({len(people)} người có ≥ {min_images} ảnh trong cache)")
+
+    df = load_cached_faces(people=people)
+    missing = sorted(set(people) - set(df["person"]))
+    if missing:
+        print(f"Cảnh báo: {len(missing)} người trong {subset_file} không còn ảnh hợp lệ trong cache: {missing[:5]}...")
+    return df
+
+
 # =========================
 # CACHE EMBEDDING THEO MÔ HÌNH
 # =========================
@@ -194,11 +248,12 @@ def embed_dataset(model_name, faces_df, verbose=True):
 
     cache = {}
     if os.path.exists(cache_path):
-        data = np.load(cache_path, allow_pickle=True)
-        for p, x, t in zip(data["paths"], data["X"], data["embed_s"]):
-            # khóa là đường dẫn tuyệt đối, có thể do máy khác ghi: lấy <người>/<file> rồi gắn vào thư mục hiện tại
-            person, filename = str(p).replace("\\", "/").split("/")[-2:]
-            cache[os.path.join(FACES_CACHE_DIR, person, filename)] = (x, float(t))
+        # phải đóng file (with): trên Windows file .npz còn mở thì os.replace ở _write_embed_cache báo PermissionError
+        with np.load(cache_path, allow_pickle=True) as data:
+            for p, x, t in zip(data["paths"], data["X"], data["embed_s"]):
+                # khóa là đường dẫn tuyệt đối, có thể do máy khác ghi: lấy <người>/<file> rồi gắn vào thư mục hiện tại
+                person, filename = str(p).replace("\\", "/").split("/")[-2:]
+                cache[os.path.join(FACES_CACHE_DIR, person, filename)] = (x, float(t))
 
     paths = list(faces_df["face_path"])
     missing = [p for p in paths if p not in cache]

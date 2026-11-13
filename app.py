@@ -11,8 +11,10 @@ import streamlit as st
 
 from PIL import ImageFont, ImageDraw, Image
 from config import (
-    DATASET_DIR, RESULTS_DIR, MODEL_NAMES, DETECTOR_BACKEND, PIPELINE_FINGERPRINT, model_path, normalize_name,
+    ALGO_RESULTS_DIR, BENCH_EMBEDDING, DATASET_DIR, DEMO_ALGORITHMS, RESULTS_DIR, MODEL_NAMES, DETECTOR_BACKEND,
+    PIPELINE_FINGERPRINT, model_path, normalize_name,
 )
+import classifiers
 import train_model
 import vector_db
 from face_pipeline import detect_faces, embed_face, ensure_face_cache
@@ -21,6 +23,8 @@ from knn_func import load_knn_from_npz
 TARGET_IMAGES_PER_PERSON = 10
 SOURCE_NPZ = "File .npz"
 SOURCE_PG = "PostgreSQL (pgvector)"
+SOURCE_ALGO = f"Thuật toán phân loại ({BENCH_EMBEDDING})"
+SATURATED_CONFIDENCE = {"DecisionTree", "GaussianNB", "LDA"}   # độ tin cậy bão hòa: ngưỡng Unknown vô hiệu (xem báo cáo mục 7.1)
 
 # =========================
 # CẤU HÌNH GIAO DIỆN
@@ -101,6 +105,33 @@ def get_knn(model_name, source=SOURCE_NPZ):
     return load_model(model_name, os.path.getmtime(model_path(model_name)))
 
 
+def algo_trained(algo):
+    """Đã train bằng `python train_model.py [--algo ...]`: có file output/model_<embedding>_<thuật toán>.*"""
+    return os.path.exists(classifiers.model_file(algo, BENCH_EMBEDDING))
+
+
+def algo_models():
+    """Các thuật toán đã train, theo thứ tự hiển thị."""
+    return [a for a in classifiers.display_order() if algo_trained(a)]
+
+
+def algo_label(algo):
+    """Nhãn trong ô chọn: 2 thuật toán demo có ⭐ (và nằm đầu danh sách, xem classifiers.display_order); chưa train thì ghi rõ."""
+    label = f"⭐ {algo} (demo)" if algo in DEMO_ALGORITHMS else algo
+    return label if algo_trained(algo) else f"{label} (chưa train)"
+
+
+# Random Forest (~0,8 GB) và Extra Trees (~1,6 GB) rất nặng: chỉ giữ tối đa 3 mô hình trong RAM, mô hình ít dùng nhất bị bỏ
+@st.cache_resource(max_entries=3)
+def load_algo(algo, mtime):
+    # mtime nằm trong khóa cache: train lại thì file đổi và mô hình được nạp lại. File .joblib là pickle, chỉ nạp file tự train
+    return classifiers.load(classifiers.model_file(algo, BENCH_EMBEDDING))
+
+
+def get_algo(algo):
+    return load_algo(algo, os.path.getmtime(classifiers.model_file(algo, BENCH_EMBEDDING)))
+
+
 # =========================
 # HÀM TIỆN ÍCH
 # =========================
@@ -162,6 +193,22 @@ def predict_name_from_face(face_bgr, model_name, knn_model):
 
         return str(pred), min_distance
 
+    except Exception as e:
+        print(f"Error predicting: {e}")
+        return "Unknown", None
+
+
+def predict_name_with_algo(face_bgr, model, meta):
+    """Trả về (tên, độ tin cậy) với một thuật toán trong classifiers.py. Độ tin cậy = điểm cao nhất của classifiers.scores
+    (lớn hơn = chắc hơn; KNN là -khoảng cách tới láng giềng gần nhất). Dưới ngưỡng trong meta thì là "Unknown"."""
+    try:
+        embedding = embed_face(face_bgr, BENCH_EMBEDDING)[None, :]
+        pred = str(model.predict(embedding)[0])
+        confidence = float(classifiers.scores(model, embedding)[0].max())
+        threshold = meta.get("threshold")
+        if threshold is not None and confidence < threshold:
+            return "Unknown", confidence
+        return pred, confidence
     except Exception as e:
         print(f"Error predicting: {e}")
         return "Unknown", None
@@ -313,20 +360,34 @@ def _sync_section():
 # =========================
 def page_nhan_dien(model_name, source=SOURCE_NPZ):
     st.markdown('<div class="main-title">NHẬN DIỆN KHUÔN MẶT</div>', unsafe_allow_html=True)
+    use_algo = source == SOURCE_ALGO
     st.markdown(
-        f'<div class="sub-title">DeepFace RetinaFace + {model_name} Embedding + KNN</div>',
+        f'<div class="sub-title">DeepFace RetinaFace + '
+        f'{BENCH_EMBEDDING + " Embedding + " + str(model_name) if use_algo else str(model_name) + " Embedding + KNN"}</div>',
         unsafe_allow_html=True,
     )
 
     if model_name is None:
         st.error(
-            "⚠️ Chưa có model KNN nào.\n\n"
-            "Hãy chạy `python train_model.py --model ArcFace` (hoặc `python train_model.py` "
-            "sau khi chạy `python benchmark.py`)."
+            "⚠️ Chưa có model nào.\n\n"
+            "Hãy chạy `python train_model.py` (SVM tuyến tính + KNN trên ArcFace) hoặc "
+            "`python train_model.py --model ArcFace` (KNN trên cả dataset/)."
         )
         return
-    knn_model = get_knn(model_name, source)
-    db_pipeline = getattr(knn_model, "pipeline_fingerprint", None)
+    if use_algo:
+        if not algo_trained(model_name):
+            st.warning(
+                f"Thuật toán **{model_name}** chưa được train. Chạy `python train_model.py --algo {model_name}` "
+                "(xong thì tải lại trang) rồi chọn lại."
+            )
+            return
+        with st.spinner(f"Đang nạp mô hình {model_name}..."):
+            algo_model, algo_meta = get_algo(model_name)
+        knn_model = None
+        db_pipeline = algo_meta.get("pipeline_fingerprint")
+    else:
+        knn_model = get_knn(model_name, source)
+        db_pipeline = getattr(knn_model, "pipeline_fingerprint", None)
     if db_pipeline and db_pipeline != PIPELINE_FINGERPRINT:
         st.warning(
             f"Vector trong DB được tạo bằng pipeline `{db_pipeline}`, máy này dùng `{PIPELINE_FINGERPRINT}`. "
@@ -364,8 +425,17 @@ def page_nhan_dien(model_name, source=SOURCE_NPZ):
             face_bgr, facial_area = face["face_bgr"], face["facial_area"]
             x, y, w, h = facial_area['x'], facial_area['y'], facial_area['w'], facial_area['h']
 
-            name, distance = predict_name_from_face(face_bgr, model_name, knn_model)
-            details.append({"Tên": name, "Khoảng cách": None if distance is None else round(distance, 3)})
+            if use_algo:
+                name, confidence = predict_name_with_algo(face_bgr, algo_model, algo_meta)
+                # KNN: hiển thị khoảng cách (= -độ tin cậy) cho giống các nguồn KNN khác; thuật toán khác: điểm tin cậy
+                if model_name == "KNN":
+                    score_col, score = "Khoảng cách", None if confidence is None else -confidence
+                else:
+                    score_col, score = "Độ tin cậy", confidence
+            else:
+                name, score = predict_name_from_face(face_bgr, model_name, knn_model)
+                score_col = "Khoảng cách"
+            details.append({"Tên": name, score_col: None if score is None else round(score, 3)})
 
             # Chọn màu
             if name == "Unknown":
@@ -405,11 +475,29 @@ def page_nhan_dien(model_name, source=SOURCE_NPZ):
         caption="Kết quả nhận diện",
         width="stretch",
     )
-    thr = knn_model.threshold
-    st.caption(
-        f"Mô hình {model_name} ({source}), K={knn_model.K}, ngưỡng Unknown = "
-        f"{'không dùng' if thr is None else round(thr, 3)} (khoảng cách Euclid trên embedding đã L2-normalize)."
-    )
+    if use_algo:
+        thr = algo_meta.get("threshold")
+        if thr is None:
+            thr_text = "không dùng"
+        elif model_name == "KNN":
+            thr_text = f"khoảng cách > {-thr:.3f} thì là Unknown (Euclid trên embedding đã L2-normalize)"
+        else:
+            thr_text = f"độ tin cậy < {thr:.3f} thì là Unknown (thang điểm riêng của {model_name}, không so sánh với thuật toán khác)"
+        st.caption(
+            f"Thuật toán {model_name} trên {BENCH_EMBEDDING}, huấn luyện {algo_meta.get('n_train', '?')} ảnh / "
+            f"{algo_meta.get('n_classes', '?')} người ({algo_meta.get('trained_at', '?')}). Ngưỡng Unknown: {thr_text}."
+        )
+        if model_name in SATURATED_CONFIDENCE:
+            st.caption(
+                f"⚠️ Xác suất đầu ra của {model_name} gần như luôn bằng 1 (bão hòa) nên ngưỡng Unknown gần như không loại được ai: "
+                "người lạ hầu hết vẫn bị gán thành một người quen (báo cáo mục 7.1 và 7.3)."
+            )
+    else:
+        thr = knn_model.threshold
+        st.caption(
+            f"Mô hình {model_name} ({source}), K={knn_model.K}, ngưỡng Unknown = "
+            f"{'không dùng' if thr is None else round(thr, 3)} (khoảng cách Euclid trên embedding đã L2-normalize)."
+        )
     st.dataframe(pd.DataFrame(details), hide_index=True)
 
 
@@ -420,15 +508,12 @@ def _results_path(name):
     return os.path.join(RESULTS_DIR, name)
 
 
-def page_so_sanh():
-    st.markdown('<div class="main-title">SO SÁNH CÁC MÔ HÌNH</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sub-title">Embedding (DeepFace) + KNN — số liệu từ benchmark.py</div>',
-        unsafe_allow_html=True,
-    )
+def page_so_sanh_embedding():
+    """Phụ lục: so sánh 9 embedding (cùng dùng KNN), số liệu từ benchmark_embeddings.py trên 62 người LFW."""
+    st.caption("Phụ lục: so sánh 9 bộ embedding của DeepFace, cả 9 đều dùng KNN. Số liệu đo trên 62 người LFW (benchmark_embeddings.py).")
 
     if not os.path.exists(_results_path("metrics.csv")):
-        st.error("Chưa có kết quả. Hãy chạy `python benchmark.py` rồi `python plot_results.py`.")
+        st.error("Chưa có kết quả. Hãy chạy `python benchmark_embeddings.py` rồi `python plot_results.py --kind embeddings`.")
         return
 
     metrics = pd.read_csv(_results_path("metrics.csv"))
@@ -458,7 +543,7 @@ def page_so_sanh():
     st.subheader("Biểu đồ")
     for fname, caption in [
         ("f1_ranking.png", "Xếp hạng theo F1"),
-        ("metrics_heatmap.png", "6 độ đo của 10 mô hình"),
+        ("metrics_heatmap.png", "6 độ đo của 9 embedding"),
         ("speed_vs_f1.png", "Độ chính xác so với tốc độ"),
         ("time_breakdown.png", "Thời gian từng bước"),
         ("failure_breakdown.png", "Các loại ca lỗi"),
@@ -480,6 +565,85 @@ def page_so_sanh():
         st.info("Chưa có ảnh lỗi cho mô hình này.")
 
 
+def page_so_sanh_algo():
+    """So sánh 10 thuật toán phân loại trên cùng embedding, số liệu và biểu đồ từ benchmark.py + plot_results.py."""
+    path = lambda name: os.path.join(ALGO_RESULTS_DIR, name)
+    needed = ["metrics.csv", "cv.csv", "timing.csv", "best_algorithms.json"]
+    if not all(os.path.exists(path(f)) for f in needed):
+        st.error("Chưa có kết quả. Hãy chạy `python benchmark.py` rồi `python plot_results.py`.")
+        return
+
+    metrics, cv, timing = (pd.read_csv(path(f)) for f in ("metrics.csv", "cv.csv", "timing.csv"))
+    with open(path("best_algorithms.json"), encoding="utf-8") as f:
+        best = json.load(f)
+    info = {}
+    if os.path.exists(path("run_info.json")):
+        with open(path("run_info.json"), encoding="utf-8") as f:
+            info = json.load(f)
+        st.caption(
+            f"Embedding {info['embedding']} cố định cho cả 10 thuật toán. Dữ liệu: {info['n_people']} người, {info['n_images']} ảnh "
+            f"(train {info['n_train']} / test {info['n_test']}, chia 80/20 phân tầng, seed {info['seed']}). "
+            f"CPU: {info['processor']} ({info['cpu_count']} luồng)."
+        )
+
+    st.subheader("6 độ đo trên tập test (một lần chia)")
+    cols = ["algorithm", "accuracy", "precision_macro", "recall_macro", "f1_macro", "top3_accuracy", "cohen_kappa"]
+    st.dataframe(metrics[cols].round(4), hide_index=True, width="stretch")
+    msg = f"2 thuật toán đứng đầu theo quy tắc đặt trước: **{best['best'][0]}**, **{best['best'][1]}**."
+    if best.get("indistinguishable"):
+        msg += " Chênh lệch giữa hai thuật toán này nhỏ hơn độ lệch chuẩn của 5-fold CV, nên chưa thể nói thuật toán nào tốt hơn."
+    st.success(msg)
+
+    st.subheader("5-fold cross-validation")
+    st.dataframe(cv.round(4), hide_index=True, width="stretch")
+    st.caption("Trung bình và độ lệch chuẩn (ddof = 1) trên 5 fold. Khi các thuật toán chênh nhau ít hơn độ lệch chuẩn thì thứ hạng không chắc chắn.")
+
+    st.subheader("Tốc độ và kích thước")
+    tcols = ["algorithm", "fit_s", "predict_ms", "scores_ms", "model_mb", "fps_embed_classify", "fps_end_to_end"]
+    st.dataframe(timing[[c for c in tcols if c in timing.columns]].round(3), hide_index=True, width="stretch")
+    shared = info.get("timing", {}).get("shared")
+    st.caption(
+        "predict_ms: một vector chỉ lấy nhãn; scores_ms: lấy thêm độ tin cậy (cần để loại Unknown). "
+        + (f"Detect {shared['detect_ms']:.0f} ms và embed {shared['embed_ms']:.0f} ms mỗi ảnh là chi phí chung cho cả 10 thuật toán, "
+           "nên FPS end-to-end gần như bằng nhau." if shared else "")
+    )
+
+    st.subheader("Biểu đồ")
+    charts = [("f1_ranking.png", "Xếp hạng F1"), ("metrics_heatmap.png", "6 độ đo"),
+              ("speed_vs_f1.png", "Độ chính xác so với tốc độ"), ("time_and_size.png", "Chi phí"),
+              ("failure_breakdown.png", "Các loại ca lỗi"), ("overlap_hist.png", "Một mẫu bị sai bởi bao nhiêu thuật toán")]
+    charts += [(f"confusion_{a}.png", f"Ma trận nhầm lẫn: {a}") for a in best["best"]]
+    for fname, caption in charts:
+        if os.path.exists(path(fname)):
+            st.image(path(fname), caption=caption, width="stretch")
+
+    st.subheader("Các trường hợp nhận diện sai")
+    st.caption("Mỗi ảnh: bên trái là ảnh test, bên phải là mẫu train gần nhất thuộc người bị dự đoán nhầm. "
+               "'_all_wrong' là các mẫu mà cả 10 thuật toán cùng sai.")
+    options = list(metrics["algorithm"]) + (["_all_wrong"] if os.path.isdir(path(os.path.join("failures", "_all_wrong"))) else [])
+    choice = st.selectbox("Chọn thuật toán", options, index=options.index(best["best"][0]) if best["best"][0] in options else 0)
+    fail_dir = path(os.path.join("failures", choice))
+    if os.path.isdir(fail_dir):
+        cols_ui = st.columns(3)
+        for i, fn in enumerate(sorted(os.listdir(fail_dir))[:12]):
+            cols_ui[i % 3].image(os.path.join(fail_dir, fn), width="stretch")
+    else:
+        st.info("Chưa có ảnh lỗi cho lựa chọn này.")
+
+
+def page_so_sanh():
+    st.markdown('<div class="main-title">SO SÁNH CÁC MÔ HÌNH</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-title">So sánh 10 thuật toán phân loại (benchmark.py) và phụ lục so sánh 9 embedding</div>',
+        unsafe_allow_html=True,
+    )
+    tab_algo, tab_embed = st.tabs(["10 thuật toán phân loại", "Phụ lục: 9 embedding"])
+    with tab_algo:
+        page_so_sanh_algo()
+    with tab_embed:
+        page_so_sanh_embedding()
+
+
 # =========================
 # MAIN
 # =========================
@@ -490,12 +654,18 @@ def main():
     model_name = None
     source = SOURCE_NPZ
     if choice == "🔍 Nhận diện":
-        if pg_models():   # chỉ hiện lựa chọn khi PostgreSQL đang chạy và đã có dữ liệu
-            source = st.sidebar.radio("Nguồn vector", [SOURCE_NPZ, SOURCE_PG])
-        models = available_models(source)
-        if models:
-            model_name = st.sidebar.selectbox("Mô hình embedding", models)
-            st.sidebar.info(f"**Model:** {model_name}\n\n**Detector:** {DETECTOR_BACKEND}")
+        sources = ([SOURCE_ALGO] if algo_models() else []) + [SOURCE_NPZ] + ([SOURCE_PG] if pg_models() else [])
+        if len(sources) > 1:   # SOURCE_PG chỉ hiện khi PostgreSQL đang chạy và đã có dữ liệu
+            source = st.sidebar.radio("Nguồn mô hình", sources)
+        if source == SOURCE_ALGO:
+            # đủ 10 thuật toán, 2 thuật toán demo ở đầu; thuật toán chưa train vẫn hiện nhưng có nhãn "(chưa train)"
+            model_name = st.sidebar.selectbox("Thuật toán", classifiers.display_order(), format_func=algo_label)
+            st.sidebar.info(f"**Embedding:** {BENCH_EMBEDDING}\n\n**Thuật toán:** {model_name}\n\n**Detector:** {DETECTOR_BACKEND}")
+        else:
+            models = available_models(source)
+            if models:
+                model_name = st.sidebar.selectbox("Mô hình embedding", models)
+                st.sidebar.info(f"**Model:** {model_name}\n\n**Detector:** {DETECTOR_BACKEND}")
 
     if choice == "📸 Chụp ảnh":
         page_chup_anh()

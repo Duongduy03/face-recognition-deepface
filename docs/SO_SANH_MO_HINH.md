@@ -1,14 +1,24 @@
-# So sánh các mô hình embedding kết hợp KNN
+# Phụ lục: so sánh các bộ embedding kết hợp KNN
 
-Tài liệu này mô tả phần mở rộng theo yêu cầu của giảng viên: so sánh nhiều mô hình, đo bằng nhiều độ đo,
-đo tốc độ (FPS), phân tích các ca nhận diện sai, và demo 2 mô hình tốt nhất.
-Mọi con số dưới đây do `benchmark.py` tạo ra và nằm trong thư mục [`results/`](../results/).
+> **Đây là phụ lục, không phải báo cáo chính.** Báo cáo chính của đề tài là
+> [so sánh 10 thuật toán phân loại](SO_SANH_THUAT_TOAN.md) trên cùng một embedding. Tài liệu này so sánh **9 bộ embedding của DeepFace,
+> cả 9 đều dùng cùng một bộ phân loại KNN**, nên nó trả lời câu hỏi "nên dùng embedding nào" (kết quả: ArcFace), không phải
+> "nên dùng thuật toán nào". Yêu cầu của giảng viên về "10 mô hình" **không** được đáp ứng bởi tài liệu này.
+>
+> **Phạm vi số liệu.** Mọi số liệu đo trên **62 người LFW, 1.673 ảnh** (DeepFace 0.0.101). `dataset/` hiện có 1.774 người, 24.424 ảnh và
+> `requirements.txt` ghim DeepFace 0.0.103, nên các số này chưa phản ánh dữ liệu và môi trường hiện tại. `results/run_info.json` ghi nền tảng
+> Windows 11 (CPU i5-1135G7), trong khi máy phát triển hiện tại là Windows 10: số FPS có thể đến từ máy khác và không dùng lại cho báo cáo chính.
+
+Mọi con số dưới đây do `benchmark.py` (nay đổi tên thành [`benchmark_embeddings.py`](../benchmark_embeddings.py)) tạo ra và nằm trong
+thư mục [`results/`](../results/). `benchmark.py` mới dành cho so sánh 10 thuật toán. Lệnh tái lập phụ lục này là
+`python benchmark_embeddings.py`; chạy trên `dataset/` hiện tại sẽ ra số khác vì dữ liệu đã đổi (mục 7).
 
 ## 1. Tóm tắt
 
-- **So sánh được 9 mô hình, không phải 10.** `DeepFace` và `Buffalo_L` không chạy được trong môi trường này
+- **So sánh được 9 embedding.** `DeepFace` và `Buffalo_L` không chạy được trong môi trường này
   (lý do ở mục 2.1). Mã vẫn khai báo hai mô hình này trong `config.py` (`UNAVAILABLE_MODELS`).
-- **Hai mô hình demo: ArcFace và Facenet512.** Cả hai cùng đúng 330/335 mẫu test (accuracy 0,9851).
+- **Hai embedding có F1 cao nhất: ArcFace và Facenet512.** Cả hai cùng đúng 330/335 mẫu test (accuracy 0,9851). ArcFace được chọn làm
+  embedding cố định cho báo cáo chính.
 - **5 mô hình đầu (ArcFace, Facenet512, Facenet, VGG-Face, SFace) chỉ cách nhau 1–4 mẫu test** (accuracy 0,973–0,985),
   nên không thể kết luận chắc chắn mô hình nào nhỉnh hơn. Việc chọn ArcFace và Facenet512 dựa trên F1 macro
   chênh nhau 0,0008 (xem mục 4.3).
@@ -19,30 +29,23 @@ Mọi con số dưới đây do `benchmark.py` tạo ra và nằm trong thư m�
 - **Ca lỗi:** phần lớn lỗi của các mô hình tốt không phải do bộ phân loại mà do crop khuôn mặt bị hỏng sau bước
   detect/căn chỉnh (mục 6.2).
 
-## 2. Yêu cầu của giảng viên và nơi thực hiện
+## 2. Phạm vi của phụ lục
 
-| Yêu cầu | Thực hiện | Ghi chú |
-|---|---|---|
-| Làm nhiều mô hình | 9 mô hình DeepFace + KNN, khai báo trong `config.py` | Muốn 10 thì xem mục 2.1 |
-| So sánh giữa 10 mô hình | `benchmark.py` → `results/metrics.csv` | **9 mô hình** |
-| Demo 2 mô hình tốt nhất | `app.py` chọn giữa các mô hình đã train | ArcFace, Facenet512 |
-| 7 mô hình còn lại chỉ cần code | Có sẵn trong `config.py`; chạy `python train_model.py --model <tên>` | Không bị khóa cứng 2 mô hình |
-| 5–6 độ đo | 6 độ đo (mục 4) | Accuracy, Precision, Recall, F1, Top-3, Kappa |
-| Tốc độ FPS | `results/fps.csv` (mục 5) | CPU, 50 ảnh/mô hình |
-| Các trường hợp nhận diện sai | `results/failures_<mô hình>.csv` và `results/failures/<mô hình>/` (mục 6) | |
+Phụ lục dùng cùng khung đánh giá với báo cáo chính (6 độ đo, FPS, phân tích ca lỗi) nhưng **biến thay đổi là bộ embedding**, còn bộ phân loại
+cố định là KNN (K = 3). Bảng đối chiếu yêu cầu của giảng viên nằm ở [báo cáo chính](SO_SANH_THUAT_TOAN.md#1-yêu-cầu-của-giảng-viên-và-nơi-thực-hiện).
 
-### 2.1. Vì sao chỉ có 9 mô hình
+### 2.1. Hai embedding không chạy được
 
-DeepFace 0.0.101 hỗ trợ 11 mô hình nhận diện. Hai mô hình không chạy được trên máy này:
+DeepFace 0.0.101 hỗ trợ 11 mô hình nhận diện. Hai mô hình không chạy được trên máy đã chạy benchmark:
 
 - **DeepFace:** báo lỗi `DeepFace model requires LocallyConnected2D but it is no longer supported after tf 2.12`.
   Máy dùng TensorFlow 2.21 (Python 3.12), không có cách hạ xuống TF ≤ 2.12.
 - **Buffalo_L:** cần `insightface` và `onnxruntime` (đã cài được), nhưng trọng số được tải từ Google Drive; Drive trả về
   trang cảnh báo virus (HTML) thay vì file nên DeepFace không tải được. Đã thử tải thẳng bằng `curl` và cũng nhận
-  được trang HTML. Tôi đã xóa file HTML rác này.
+  được trang HTML. File HTML rác này đã được xóa.
 
-Nếu bạn tải được `webface_r50.onnx` về thủ công và đặt vào `C:\Users\<tên>\.deepface\weights\buffalo_l\`,
-có thể thêm `"Buffalo_L"` vào `MODEL_NAMES` trong `config.py` rồi chạy `python benchmark.py --models Buffalo_L`.
+Nếu tải được `webface_r50.onnx` về thủ công và đặt vào `C:\Users\<tên>\.deepface\weights\buffalo_l\`,
+có thể thêm `"Buffalo_L"` vào `MODEL_NAMES` trong `config.py` rồi chạy `python benchmark_embeddings.py --models Buffalo_L`.
 Cách này **chưa được thử**.
 
 ## 3. Phương pháp
@@ -103,7 +106,7 @@ Biểu đồ: [`f1_ranking.png`](../results/f1_ranking.png), [`metrics_heatmap.p
   (ArcFace 0,9853, Facenet512 0,9845, Facenet 0,9824).
 - **Nhóm giữa và nhóm cuối thì khác biệt rõ.** GhostFaceNet và Dlib thấp hơn nhóm đầu 5–8 điểm. OpenFace và DeepID chỉ
   đúng khoảng 3 trên 10 mẫu.
-- **OpenFace và DeepID thấp không phải do lỗi tiền xử lý của dự án.** Tôi so embedding do `face_pipeline.embed_face` tạo ra
+- **OpenFace và DeepID thấp không phải do lỗi tiền xử lý của dự án.** Đã so embedding do `face_pipeline.embed_face` tạo ra
   với embedding do chính pipeline gốc của DeepFace (`DeepFace.represent` với detector RetinaFace) trên cùng một ảnh:
   độ tương đồng cosine là 1,0000 với OpenFace và DeepID. Vì vậy điểm thấp là đặc tính của mô hình trên dữ liệu này.
   Nguyên nhân sâu hơn (ví dụ đầu vào độ phân giải thấp của DeepID) là **suy đoán, chưa được kiểm chứng**.
@@ -132,10 +135,10 @@ Biểu đồ: [`time_breakdown.png`](../results/time_breakdown.png), [`speed_vs_
 
 - **RetinaFace là nút thắt.** Bước detect chiếm khoảng 1,2 giây mỗi ảnh nên FPS end-to-end gần như bằng nhau
   (0,64–0,79) giữa các mô hình. Muốn nhanh hơn cần đổi detector (`DETECTOR_BACKEND` trong `config.py`, ví dụ `opencv`
-  hoặc `ssd`); **tôi chưa đo các detector này** nên không biết độ chính xác và tốc độ thực tế.
+  hoặc `ssd`); **các detector này chưa được đo** nên không biết độ chính xác và tốc độ thực tế.
 - **KNN không phải vấn đề** với 1338 mẫu (dưới 1 ms, trừ VGG-Face 20 ms do vector 4096 chiều).
 - **SFace và DeepID nhanh gấp khoảng 8–30 lần** các mô hình còn lại ở bước embed. Có thể do hai mô hình này chạy qua OpenCV/ONNX
-  còn các mô hình khác chạy qua `predict` của Keras cho từng ảnh, nhưng tôi **chưa kiểm chứng** nguyên nhân.
+  còn các mô hình khác chạy qua `predict` của Keras cho từng ảnh, nhưng nguyên nhân **chưa được kiểm chứng**.
 - **Độ lặp lại.** Hai lần đo SFace cho 75,5 FPS (lần chạy thử, chỉ 5 ảnh) và 67,8 FPS (lần chạy đầy đủ, 50 ảnh),
   tức lệch khoảng 10% (hai lần dùng số ảnh khác nhau nên đây chỉ là chỉ báo thô).
   Nên coi các số trên là cỡ độ lớn, chênh vài chục phần trăm giữa các mô hình gần nhau chưa chắc có ý nghĩa.
@@ -227,12 +230,13 @@ nên **kết quả đó không có giá trị đánh giá**.
 - **Một lần chia dữ liệu, tập test nhỏ (335 mẫu).** Xem mục 4.3.
 - **LFW là ảnh báo chí**, khác với ảnh webcam của người dùng (ánh sáng, góc mặt, độ phân giải). Kết quả ở đây
   không nên được diễn giải là độ chính xác của ứng dụng với dữ liệu của bạn. Muốn có số liệu trên dữ liệu riêng thì chụp ảnh
-  trong app rồi chạy lại `benchmark.py` (ảnh của bạn sẽ nằm cùng thư mục `dataset/`).
+  trong app rồi chạy lại `benchmark_embeddings.py` (ảnh của bạn sẽ nằm cùng thư mục `dataset/`).
 - **Ngưỡng Unknown** đặt theo quy tắc percentile 95, chưa được tối ưu và chưa đánh giá với người lạ ở quy mô lớn.
 - **FPS chỉ đo trên CPU**, ảnh 250×250, mỗi ảnh một lần gọi, không batch; không có số liệu GPU.
 - **Không có thời gian huấn luyện** để so sánh: KNN không có bước huấn luyện, chi phí nằm ở bước tạo embedding cho tập train
   (xem `embed_s` trong `output/embeddings/`).
-- **10 mô hình:** mới có 9, xem mục 2.1.
+- **Không phải so sánh thuật toán:** cả 9 embedding dùng chung KNN. Việc so sánh 10 thuật toán nằm ở
+  [báo cáo chính](SO_SANH_THUAT_TOAN.md).
 
 ## 8. Các lỗi của mã gốc đã sửa trong quá trình làm
 
@@ -254,8 +258,8 @@ py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 python prepare_data.py        # tải LFW (~200MB) vào dataset/
-python benchmark.py           # so sánh các mô hình, ghi vào results/
-python plot_results.py        # vẽ biểu đồ
+python benchmark_embeddings.py   # so sánh các embedding, ghi vào results/
+python plot_results.py --kind embeddings   # vẽ biểu đồ
 python train_model.py         # train 2 mô hình tốt nhất cho demo (đọc results/best_models.json)
 streamlit run app.py
 ```
@@ -265,7 +269,7 @@ khoảng 55 phút (VGG-Face chậm nhất, khoảng 8 phút). Detect và embed �
 mà giữ nguyên tên file thì phải xóa `output/faces/` và `output/embeddings/` để tính lại.
 
 Các tham số (K, tỉ lệ test, seed, detector, danh sách mô hình) nằm trong [`config.py`](../config.py).
-Ngưỡng Unknown (percentile 95) và ngưỡng crop hỏng (15% pixel đen) nằm đầu [`benchmark.py`](../benchmark.py).
+Ngưỡng Unknown (percentile 95) và ngưỡng crop hỏng (15% pixel đen) nằm đầu [`benchmark_embeddings.py`](../benchmark_embeddings.py).
 
 ## 10. Các file liên quan
 
@@ -275,7 +279,7 @@ Ngưỡng Unknown (percentile 95) và ngưỡng crop hỏng (15% pixel đen) n�
 | `face_pipeline.py` | detect, embed, cache khuôn mặt và embedding |
 | `knn_func.py` | KNN tự cài đặt |
 | `prepare_data.py` | Tải LFW |
-| `benchmark.py` | Đánh giá, đo FPS, phân tích lỗi |
+| `benchmark_embeddings.py` | Đánh giá, đo FPS, phân tích lỗi (so sánh embedding) |
 | `plot_results.py` | Vẽ biểu đồ |
 | `train_model.py` | Train KNN cho từng mô hình (dùng cho demo) |
 | `app.py` | Giao diện, có trang "So sánh mô hình" đọc `results/` |

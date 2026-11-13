@@ -1,0 +1,22 @@
+{
+  "best": [
+    "SVM-linear",
+    "SVM-RBF"
+  ],
+  "rule": "F1 macro, hòa thì Accuracy, rồi predict_ms nhỏ hơn",
+  "f1_macro": [
+    0.9886092151240338,
+    0.9830946003661923
+  ],
+  "indistinguishable": true,
+  "cv_f1_mean": [
+    0.9811968696924946,
+    0.9775904524892376
+  ],
+  "cv_f1_std": [
+    0.006249332943805122,
+    0.006974440193557333
+  ],
+  "cv_gap": 0.0036064172032570507,
+  "note": "indistinguishable = chênh lệch F1 trung bình CV giữa hai thuật toán nhỏ hơn độ lệch chuẩn CV lớn hơn"
+}

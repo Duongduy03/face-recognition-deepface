@@ -21,7 +21,8 @@ DATASET_DIR = os.path.join(PROJECT_ROOT, "dataset")
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 EMBED_DIR = os.path.join(OUTPUT_DIR, "embeddings")      # cache embedding của benchmark
 FACES_CACHE_DIR = os.path.join(OUTPUT_DIR, "faces")     # cache khuôn mặt đã detect
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")                # so sánh 9 embedding (phụ lục)
+ALGO_RESULTS_DIR = os.path.join(RESULTS_DIR, "algorithms")         # so sánh 10 thuật toán (báo cáo chính)
 
 # Ảnh "người lạ" không có tên (Kaggle face-detection-dataset, git bỏ qua) dùng để đo tỉ lệ nhận nhầm.
 # Để ngoài dataset/: ở đó mỗi thư mục con là một người và sẽ bị đưa vào train.
@@ -52,7 +53,7 @@ DB_URL = os.environ.get("FACE_DB_URL") or "postgresql://face:face@localhost:5432
 # CẤU HÌNH MÔ HÌNH
 # =========================
 # Các mô hình embedding của DeepFace, mỗi mô hình ghép với KNN.
-# Đây là nơi duy nhất khai báo tên mô hình: app.py, train_model.py, benchmark.py đều đọc từ đây.
+# Đây là nơi duy nhất khai báo tên mô hình: app.py, train_model.py, benchmark_embeddings.py đều đọc từ đây.
 MODEL_NAMES = [
     "VGG-Face",
     "Facenet",
@@ -74,6 +75,33 @@ UNAVAILABLE_MODELS = {
 }
 
 DETECTOR_BACKEND = "retinaface"
+
+# =========================
+# SO SÁNH 10 THUẬT TOÁN PHÂN LOẠI (xem docs/SO_SANH_THUAT_TOAN.md)
+# =========================
+# Cả 10 thuật toán chạy trên cùng một embedding, để chênh lệch chỉ đến từ bộ phân loại.
+BENCH_EMBEDDING = "ArcFace"
+# Tập con để so sánh: những người có ít nhất ngần này ảnh trong cache khuôn mặt. Danh sách người được
+# ghi cố định vào results/algorithms/subset_people.txt (cache lớn dần nên số người ≥ ngưỡng sẽ đổi theo thời gian).
+BENCH_MIN_IMAGES = 30
+# Thứ tự cố định; classifiers.build(name) dựng từng thuật toán. KNN là bản tự cài (knn_func.py), 9 cái còn lại là scikit-learn.
+CLASSIFIER_NAMES = [
+    "KNN",
+    "SVM-linear",
+    "SVM-RBF",
+    "LogisticRegression",
+    "RandomForest",
+    "ExtraTrees",
+    "DecisionTree",
+    "GaussianNB",
+    "LDA",
+    "MLP",
+]
+# 2 thuật toán demo trong app (do người làm đề tài chọn 2026-11-05, xem docs). Không trùng hẳn với
+# results/algorithms/best_algorithms.json: quy tắc đặt trước chọn SVM-linear + SVM-RBF, nhưng 6 thuật toán đầu
+# không phân biệt được theo CV, nên thay SVM-RBF bằng KNN (thuật toán của đề tài) để so sánh trực tiếp trong app.
+# `python train_model.py` không đối số train đúng các thuật toán này.
+DEMO_ALGORITHMS = ["SVM-linear", "KNN"]
 
 
 def _deepface_version():

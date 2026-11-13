@@ -1,5 +1,10 @@
 # Kế hoạch: chạy pipeline trên dataset lớn (Pins + LFW ≥ 2 ảnh)
 
+> **Quyết định (2026-11-05):** đề tài so sánh **10 thuật toán phân loại trên cùng một embedding (ArcFace)**, xem
+> [SO_SANH_THUAT_TOAN.md](SO_SANH_THUAT_TOAN.md). Thứ tự chạy: **trước hết trên tập con cố định 109 người có ≥ 30 ảnh (5.459 ảnh, đã detect xong)**,
+> sau đó mới chạy toàn bộ 1.774 người theo kế hoạch dưới đây. Vì vậy phần benchmark 9 embedding ở các bước dưới là **tùy chọn** (chỉ cần
+> để xác nhận ArcFace); ưu tiên là embed ArcFace cho phần còn thiếu của tập con (2.309 ảnh).
+
 Trạng thái dataset hiện tại: **1.774 người, 24.424 ảnh**.
 
 | Nguồn | Người | Ảnh | Ghi chú |
@@ -19,16 +24,16 @@ Trạng thái dataset hiện tại: **1.774 người, 24.424 ảnh**.
 **Rủi ro cần xử lý trước khi chạy dài:**
 
 1. `ensure_face_cache` lưu index mỗi 100 ảnh nên ngắt rồi chạy lại được.
-2. `embed_dataset` chỉ ghi `output/embeddings/<model>.npz` ở **cuối** mỗi model. Nếu bị ngắt giữa chừng thì mất hết phần đã embed của model đó. Nên thêm lưu định kỳ trước khi chạy dài.
+2. ~~`embed_dataset` chỉ ghi cache ở cuối mỗi model.~~ Đã sửa: `embed_dataset` hiện lưu định kỳ (`EMBED_SAVE_EVERY`), ngắt rồi chạy lại được.
 3. Máy không được sleep khi chạy qua đêm (dùng keep-awake của app hoặc chạy trong Terminal panel).
 4. Cache cũ `output/embeddings/*.npz` và `output/model_knn_*.npz` hiện thuộc dataset cũ. Train lại sẽ ghi đè, nên sao lưu nếu muốn giữ kết quả cũ.
 
 **Các bước đề xuất:**
 
-1. Thử nhỏ: `python benchmark.py --models ArcFace --skip-fps` trên một tập con để đo thời gian detect/embed/model thật.
+1. Thử nhỏ: `python benchmark_embeddings.py --models ArcFace --skip-fps` trên một tập con để đo thời gian detect/embed/model thật.
 2. Chạy detect toàn bộ một lần (qua đêm), có log ra `output/`.
 3. Benchmark từng nhóm model, chạy trước ArcFace, Facenet512, SFace (3 model đang có trong DB). Rồi mới đến 6 model còn lại.
-4. `python plot_results.py`, cập nhật `docs/SO_SANH_MO_HINH.md` (số liệu cũ ứng với 7 người LFW nên không so sánh được).
+4. `python plot_results.py`, cập nhật `docs/SO_SANH_THUAT_TOAN.md` (báo cáo chính). `docs/SO_SANH_MO_HINH.md` là phụ lục đo trên 62 người LFW, giữ nguyên số liệu cũ, không so sánh trực tiếp với dataset mới.
 5. `python train_model.py` cho các model tốt nhất.
 
 **Điểm cần lưu ý khi đánh giá:**

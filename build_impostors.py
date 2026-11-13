@@ -21,7 +21,7 @@ from config import IMPOSTOR_CACHE_DIR, IMPOSTOR_SRC_DIR, IMAGE_EXTS, MODEL_NAMES
 from face_pipeline import black_ratio, detect_faces, embed_face, imread_unicode, imwrite_unicode, largest_face
 
 MIN_CONFIDENCE = 0.9    # RetinaFace chắc chắn đây là khuôn mặt
-MAX_BLACK_RATIO = 0.15  # cùng ngưỡng "bad_crop" của benchmark.py
+MAX_BLACK_RATIO = 0.15  # cùng ngưỡng "bad_crop" của benchmark_embeddings.py
 BATCH = 100             # số vector ghi DB mỗi lần, để bị ngắt giữa chừng không mất hết
 INDEX_COLS = ["key", "accepted", "confidence", "reason"]
 
